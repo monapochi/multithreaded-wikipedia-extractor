@@ -33,18 +33,21 @@
 #  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 # =============================================================================
 
-"""Multithread Wikipedia Extractor:
+"""
+Multithread Wikipedia Extractor:
+    
 Extracts and cleans text from Wikipedia database dump and stores output in a
 number of files of similar size in a given directory.
 Each file contains several documents in the format:
+    
 	<doc id="" url="" title="">
         ...
         </doc>
 """
 
-import Queue, threading, argparse
+import Queue, threading, argparse, shutil
 import sys, urllib, re, bz2, multiprocessing
-import os.path, os, string, random, codecs, traceback
+import os.path, os, string, random, traceback
 from htmlentitydefs import name2codepoint
 from lxml import etree
 
@@ -55,32 +58,38 @@ class WikiCleanerThread(threading.Thread):
     
     _filename_lock = threading.RLock()    
     
-    def __init__(self, queue, outputdir, maxfilesize, prefix):
+    def __init__(self, queue, outputdir, maxfilesize, prefix, compress):
         threading.Thread.__init__(self)
         self._queue = queue
         self._maxfilesize = maxfilesize
         self._prefix = prefix
+        self._compress = compress
         self._outputdir = outputdir
         if not os.path.exists(outputdir):
             os.mkdir(outputdir)
         self._outfile = None
         
     @classmethod
-    def _get_filepath(cls, outputdir):
+    def _get_file(cls, outputdir, compress=False):
         with cls._filename_lock:
             fpath = None
             while not fpath or os.path.exists(fpath):
-                fpath = os.path.join(outputdir, ''.join([random.choice(string.letters) for _ in range(16)]))    
-            open(fpath, 'w').close()
-            return fpath
+                fname = ''.join([random.choice(string.letters) for _ in range(16)])
+                ext = ".raw" if not compress else ".raw.bz2"
+                fpath = os.path.join(outputdir, fname + ext)    
+                
+            if compress:
+                return bz2.BZ2File(fpath, 'w')
+                
+            return open(fpath, 'w')
     
     def _write(self, header, body, footer):
         if not self._outfile:
-            self._outfile = codecs.open(self._get_filepath(self._outputdir), 'w', 'utf-8')
+            self._outfile = self._get_file(self._outputdir, self._compress)
         
-        self._outfile.write(header) 
-        self._outfile.write(body)
-        self._outfile.write(footer)        
+        self._outfile.write(header.encode("utf-8")) 
+        self._outfile.write(body.encode("utf-8"))
+        self._outfile.write(footer.encode("utf-8"))        
         
         if self._outfile.tell() > self._maxfilesize:
             self._outfile.close()
@@ -110,21 +119,24 @@ class WikiCleanerThread(threading.Thread):
                 body = ' '.join(compact(clean(wiki_text))).strip()
                 footer = "\n</doc>"
                 self._write(header, body, footer)
-        
+                
     def run(self):
         while True:
             page_elem = None
             try:
-                page_elem = self._queue.get()
+                page_elem = self._queue.get(timeout=1)
                 if page_elem is not None:
                     self._clean(page_elem)
+            except Queue.Empty:
+                break
             except:
                 traceback.print_exc(file=sys.stdout)
             finally:
                 if page_elem is not None:
                     page_elem.clear()
-                self._queue.task_done()
-
+                    self._queue.task_done()
+                    
+        print "%s done" % self.name
 
 ##
 # Whether to preseve links in output
@@ -531,7 +543,7 @@ def handle_unicode(entity):
     if numeric_code >= 0x10000: return ''
     return unichr(numeric_code)
 
-def process_data(inputdump, outputdir, maxfilesize):
+def process_data(inputdump, outputdir, maxfilesize, compress):
     
     # we expects large dumps so we are using iterparse method
     context = etree.iterparse(inputdump)
@@ -550,10 +562,12 @@ def process_data(inputdump, outputdir, maxfilesize):
     queue = Queue.Queue(maxsize=100)
 
     # start worker threads    
+    workers = []
     for _ in range(multiprocessing.cpu_count()):
-        cleaner = WikiCleanerThread(queue, outputdir, maxfilesize, prefix)
+        cleaner = WikiCleanerThread(queue, outputdir, maxfilesize, prefix, compress)
         cleaner.setDaemon(True)
         cleaner.start()
+        workers.append(cleaner)
     
     # put element pages in the queue to be processed by the cleaner threads
     for event, elem in context:
@@ -562,6 +576,11 @@ def process_data(inputdump, outputdir, maxfilesize):
     
     # wait an empty queue
     queue.join()        
+    
+    for w in workers:
+        w.join()
+    
+    print "finished"
 
 def main():
     global keepLinks, keepSections
@@ -569,6 +588,7 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__)
     parser.add_argument("wikidump", help="XML wiki dump file")
     parser.add_argument("outputdir", help="output directory")
+    parser.add_argument("-w", "--overwrite", default=False, action="store_const", const=True, help="Overwrite existing output dir")
     parser.add_argument("-b", "--bytes", default="25M", help="put specified bytes per output file (default is %(default)s)", metavar="n[KM]")
     parser.add_argument("-c", "--compress", default=False, action="store_const", const=True, help="compress output files using bzip")
     parser.add_argument("-l", "--links", default=False, action="store_const", const=True, help="preserve links")
@@ -595,15 +615,21 @@ def main():
         % min_file_size
         return
         
-    if not os.path.isdir(args.outputdir):
-        try:
+    if not os.path.exists(args.outputdir):
+        os.makedirs(args.outputdir)
+    else:
+        if args.overwrite:
+            shutil.rmtree(args.outputdir)
             os.makedirs(args.outputdir)
-        except:
-            print >> sys.stderr, 'Could not create: ', args.outputdir
-            return
+        else:
+            raise ValueError("%s already exists, use --overwrite to recreate" % args.outputdir)
     
-    with open(args.wikidump) as inputdump:
-        process_data(inputdump, args.outputdir, file_size)
+    if args.wikidump.lower().endswith("bz2"):
+        with bz2.BZ2File(args.wikidump, 'r') as inputdump:
+            process_data(inputdump, args.outputdir, file_size, args.compress)
+    else:
+        with open(args.wikidump, 'r') as inputdump:
+            process_data(inputdump, args.outputdir, file_size, args.compress)
 
     
 if __name__ == '__main__':
