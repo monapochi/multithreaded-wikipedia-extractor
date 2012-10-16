@@ -55,14 +55,81 @@ Options:
   --help                : display this help and exit
 """
 
-import sys
-import getopt
-import urllib
-import re
-import bz2 # TODO : add compression support
+import Queue, threading
+import sys, getopt, urllib, re, bz2, multiprocessing
 import os.path, os, string, random, codecs, traceback
-import multiprocessing
 from htmlentitydefs import name2codepoint
+
+# Program version
+version = '1.0'
+
+class WikiCleanerThread(threading.Thread):
+    
+    _filename_lock = threading.RLock()    
+    
+    def __init__(self, queue, outputdir, maxfilesize=25*1024*1024):
+        threading.Thread.__init__(self)
+        self._queue = queue
+        self._maxfilesize = maxfilesize
+        self._outputdir = outputdir
+        if not os.path.exists(outputdir):
+            os.mkdir(outputdir)
+        self._outfile = None
+        
+    @classmethod
+    def _get_filepath(cls, outputdir):
+        with cls._filename_lock:
+            fpath = None
+            while not fpath or os.path.exists(fpath):
+                fpath = os.path.join(outputdir, ''.join([random.choice(string.letters) for _ in range(16)]))    
+            open(fpath, 'w').close()
+            return fpath
+    
+    def _write(self, header, body, footer):
+        if not self._outfile:
+            self._outfile = codecs.open(self._get_filepath(self._outputdir), 'w', 'utf-8')
+        
+        self._outfile.write(header) 
+        self._outfile.write(body)
+        self._outfile.write(footer)        
+        
+        if self._outfile.tell() > self._maxfilesize:
+            self._outfile.close()
+            self._outfile = None
+            
+    def _clean(self, page_elem):
+        # wiki xml dumps has namespace
+        # use xmlns from the page element
+        def TAG(tag):
+            return page_elem.tag.split("page")[0] + tag
+        
+        wiki_id = page_elem.find(TAG("id")).text.strip()
+        wiki_title = page_elem.find(TAG("title")).text.strip()
+        revision_elem = page_elem.find(TAG("revision"))
+        if revision_elem is not None:
+            text_elem = revision_elem.find(TAG("text"))
+            if text_elem is not None:
+                wiki_text = text_elem.text.strip()
+                print "[%s] [%s]" % (wiki_id.encode('utf-8'), wiki_title.encode('utf-8'))
+                url = guess_url(wiki_title, prefix)
+                header = '<doc id="%s" url="%s" title="%s">%s\n' % (wiki_id, url, wiki_title, wiki_title)
+                body = ' '.join(compact(clean(wiki_text))).strip()
+                footer = "\n</doc>"
+                self._write(header, body, footer)
+        
+    def run(self):
+        while True:
+            page_elem = None
+            try:
+                page_elem = self._queue.get()
+                if page_elem is not None:
+                    self._clean(page_elem)
+            except:
+                traceback.print_exc(file=sys.stdout)
+            finally:
+                if page_elem is not None:
+                    page_elem.clear()
+                self._queue.task_done()
 
 ### PARAMS ####################################################################
 
@@ -108,78 +175,6 @@ discardElements = set([
 # ParameterName = ? uppercase, lowercase, numbers, no spaces, some special chars ? ;
 #
 #=========================================================================== 
-
-# Program version
-version = '1.0'
-
-import Queue, threading
-
-_NS = "{%s}" % "http://www.mediawiki.org/xml/export-0.7/"
-def _TAG(tagname):
-    return _NS + tagname
-
-class WikiCleanerThread(threading.Thread):
-    
-    _filename_lock = threading.RLock()    
-    
-    def __init__(self, queue, outputdir, maxfilesize=25*1024*1024):
-        threading.Thread.__init__(self)
-        self._queue = queue
-        self._maxfilesize = maxfilesize
-        self._outputdir = outputdir
-        if not os.path.exists(outputdir):
-            os.mkdir(outputdir)
-        self._outfile = None
-        
-    @classmethod
-    def _get_filepath(cls, outputdir):
-        with cls._filename_lock:
-            fpath = None
-            while not fpath or os.path.exists(fpath):
-                fpath = os.path.join(outputdir, ''.join([random.choice(string.letters) for _ in range(16)]))    
-            open(fpath, 'w').close()
-            return fpath
-    
-    def _write(self, header, body, footer):
-        if not self._outfile:
-            self._outfile = codecs.open(self._get_filepath(self._outputdir), 'w', 'utf-8')
-        
-        self._outfile.write(header) 
-        self._outfile.write(body)
-        self._outfile.write(footer)        
-        
-        if self._outfile.tell() > self._maxfilesize:
-            self._outfile.close()
-            self._outfile = None
-            
-    def _clean(self, page_elem):
-        wiki_id = page_elem.find(_TAG("id")).text.strip()
-        wiki_title = page_elem.find(_TAG("title")).text.strip()
-        revision_elem = page_elem.find(_TAG("revision"))
-        if revision_elem is not None:
-            text_elem = revision_elem.find(_TAG("text"))
-            if text_elem is not None:
-                wiki_text = text_elem.text.strip()
-                print "[%s] [%s]" % (wiki_id.encode('utf-8'), wiki_title.encode('utf-8'))
-                url = guess_url(wiki_title, prefix)
-                header = '<doc id="%s" url="%s" title="%s">%s\n' % (wiki_id, url, wiki_title, wiki_title)
-                body = ' '.join(compact(clean(wiki_text))).strip()
-                footer = "\n</doc>"
-                self._write(header, body, footer)
-        
-    def run(self):
-        while True:
-            page_elem = None
-            try:
-                page_elem = self._queue.get()
-                if page_elem is not None:
-                    self._clean(page_elem)
-            except:
-                traceback.print_exc(file=sys.stdout)
-            finally:
-                if page_elem is not None:
-                    page_elem.clear()
-                self._queue.task_done()
         
 
 def guess_url(title, prefix):
@@ -558,14 +553,14 @@ def process_data(inputdump, outputdir):
     from lxml import etree
     
     queue = Queue.Queue(maxsize=100)
-    for _ in range(multiprocessing.cpu_count):
+    for _ in range(multiprocessing.cpu_count()):
         cleaner = WikiCleanerThread(queue, outputdir)
         cleaner.setDaemon(True)
         cleaner.start()
-        
+    
     context = etree.iterparse(inputdump)
     for event, elem in context:
-        if event == "end" and elem.tag == _TAG("page"):
+        if event == "end" and elem.tag.endswith("page"):
             queue.put(elem)
 
     queue.join()        
