@@ -2,31 +2,41 @@
 # -*- coding: utf-8 -*-
 
 # =============================================================================
-#  Version: 2.1 (June 28, 2012)
-#  Author: Giuseppe Attardi (attardi@di.unipi.it), University of Pisa
-#	   Antonio Fuschetto (fuschett@di.unipi.it), University of Pisa
+#  Multithread-Wikipedia-Extractor
+#  For SMP based architectures
+#  Version: 1.0 (October 15, 2012)
+# =============================================================================
+#  Copyright (c) 2012. Leonardo Souza (leonardossz@gmail.com).
+# =============================================================================
+
+# =============================================================================
+#  This a modified version of the orginal Wikipedia Extractor by
+#  Giuseppe Attardi (attardi@di.unipi.it), University of Pisa and
+#  Antonio Fuschetto (fuschett@di.unipi.it), University of Pisa, the
+#  orginal work can be found at http://medialab.di.unipi.it/wiki/Wikipedia_Extractor
 # =============================================================================
 #  Copyright (c) 2009. Giuseppe Attardi (attardi@di.unipi.it).
 # =============================================================================
-#  This file is part of Tanl.
 #
-#  Tanl is free software; you can redistribute it and/or modify it
-#  under the terms of the GNU General Public License, version 3,
+#  multithread-wikipedia-extractor is a free software; 
+#  you can redistribute it and/or modify it under the 
+#  terms of the GNU General Public License, version 3,
 #  as published by the Free Software Foundation.
 #
-#  Tanl is distributed in the hope that it will be useful,
-#  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#  GNU General Public License for more details.
+#  multithread-wikipedia-extractor is distributed in the hope 
+#  that it will be useful,  but WITHOUT ANY WARRANTY; without 
+#  even the implied warranty of  MERCHANTABILITY or FITNESS 
+#  FOR A PARTICULAR PURPOSE.  See the GNU General Public License 
+#  for more details.
 #
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 # =============================================================================
 
-"""Wikipedia Extractor:
+"""Multithread Wikipedia Extractor:
 Extracts and cleans text from Wikipedia database dump and stores output in a
 number of files of similar size in a given directory.
-Each file contains several documents in Tanl document format:
+Each file contains several documents in the format:
 	<doc id="" url="" title="">
         ...
         </doc>
@@ -51,6 +61,7 @@ import urllib
 import re
 import bz2 # TODO : add compression support
 import os.path, os, string, random, codecs, traceback
+import multiprocessing
 from htmlentitydefs import name2codepoint
 
 ### PARAMS ####################################################################
@@ -99,7 +110,7 @@ discardElements = set([
 #=========================================================================== 
 
 # Program version
-version = '3.0'
+version = '1.0'
 
 import Queue, threading
 
@@ -547,7 +558,7 @@ def process_data(inputdump, outputdir):
     from lxml import etree
     
     queue = Queue.Queue(maxsize=100)
-    for _ in range(8): # TODO expose this param as thread_workers
+    for _ in range(multiprocessing.cpu_count):
         cleaner = WikiCleanerThread(queue, outputdir)
         cleaner.setDaemon(True)
         cleaner.start()
