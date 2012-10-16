@@ -40,25 +40,13 @@ Each file contains several documents in the format:
 	<doc id="" url="" title="">
         ...
         </doc>
-
-Usage:
-  WikiExtractor.py [options]
-
-Options:
-  -c, --compress        : compress output files using bzip
-  -b, --bytes= n[KM]    : put specified bytes per output file (default 500K)
-  -B, --base= URL       : base URL for the Wikipedia pages
-  -o, --output= dir     : place output files in specified directory (default
-                          current)
-  -l, --link            : preserve links
-  -s, --sections	: preserve sections
-  --help                : display this help and exit
 """
 
-import Queue, threading
-import sys, getopt, urllib, re, bz2, multiprocessing
+import Queue, threading, argparse
+import sys, urllib, re, bz2, multiprocessing
 import os.path, os, string, random, codecs, traceback
 from htmlentitydefs import name2codepoint
+from lxml import etree
 
 # Program version
 version = '1.0'
@@ -67,10 +55,11 @@ class WikiCleanerThread(threading.Thread):
     
     _filename_lock = threading.RLock()    
     
-    def __init__(self, queue, outputdir, maxfilesize=25*1024*1024):
+    def __init__(self, queue, outputdir, maxfilesize, prefix):
         threading.Thread.__init__(self)
         self._queue = queue
         self._maxfilesize = maxfilesize
+        self._prefix = prefix
         self._outputdir = outputdir
         if not os.path.exists(outputdir):
             os.mkdir(outputdir)
@@ -96,6 +85,11 @@ class WikiCleanerThread(threading.Thread):
         if self._outfile.tell() > self._maxfilesize:
             self._outfile.close()
             self._outfile = None
+    
+    def _guess_url(self, title):
+        title = urllib.quote(title.replace(' ', '_').encode('utf-8'))
+        title = title.replace('%28', '(').replace('%29', ')')
+        return self._prefix + title.capitalize()
             
     def _clean(self, page_elem):
         # wiki xml dumps has namespace
@@ -111,7 +105,7 @@ class WikiCleanerThread(threading.Thread):
             if text_elem is not None:
                 wiki_text = text_elem.text.strip()
                 print "[%s] [%s]" % (wiki_id.encode('utf-8'), wiki_title.encode('utf-8'))
-                url = guess_url(wiki_title, prefix)
+                url = self._guess_url(wiki_title)
                 header = '<doc id="%s" url="%s" title="%s">%s\n' % (wiki_id, url, wiki_title, wiki_title)
                 body = ' '.join(compact(clean(wiki_text))).strip()
                 footer = "\n</doc>"
@@ -131,9 +125,6 @@ class WikiCleanerThread(threading.Thread):
                     page_elem.clear()
                 self._queue.task_done()
 
-### PARAMS ####################################################################
-
-prefix = 'http://it.wikipedia.org/wiki/'
 
 ##
 # Whether to preseve links in output
@@ -176,13 +167,6 @@ discardElements = set([
 #
 #=========================================================================== 
         
-
-def guess_url(title, prefix):
-    title = urllib.quote(title.replace(' ', '_').encode('utf-8'))
-    title = title.replace('%28', '(').replace('%29', ')')
-    return prefix + title.capitalize()
-
-#------------------------------------------------------------------------------
 
 selfClosingTags = set([ 'br', 'hr', 'nobr', 'ref', 'references' ])
 
@@ -547,94 +531,80 @@ def handle_unicode(entity):
     if numeric_code >= 0x10000: return ''
     return unichr(numeric_code)
 
-### READER ###################################################################
-
-def process_data(inputdump, outputdir):
-    from lxml import etree
+def process_data(inputdump, outputdir, maxfilesize):
     
+    # we expects large dumps so we are using iterparse method
+    context = etree.iterparse(inputdump)
+    context = iter(context)
+    
+    # discover prefix from the xml dump file
+    # /mediawiki/siteinfo/base
+    prefix = None    
+    for event, elem in context:
+        if event == "end" and elem.tag.endswith("base"):
+            prefix =  elem.text[:elem.text.rfind("/")]
+            break    
+    print "base url: %s" % prefix
+    
+    # initialize wiki page queue
     queue = Queue.Queue(maxsize=100)
+
+    # start worker threads    
     for _ in range(multiprocessing.cpu_count()):
-        cleaner = WikiCleanerThread(queue, outputdir)
+        cleaner = WikiCleanerThread(queue, outputdir, maxfilesize, prefix)
         cleaner.setDaemon(True)
         cleaner.start()
     
-    context = etree.iterparse(inputdump)
+    # put element pages in the queue to be processed by the cleaner threads
     for event, elem in context:
         if event == "end" and elem.tag.endswith("page"):
             queue.put(elem)
-
+    
+    # wait an empty queue
     queue.join()        
 
-### CL INTERFACE ############################################################
-
-def show_help():
-    print >> sys.stdout, __doc__,
-
-def show_usage(script_name):
-    print >> sys.stderr, 'Usage: %s [options]' % script_name
-
-##
-# Minimum size of output files
-minFileSize = 200 * 1024
-
 def main():
-    global keepLinks, keepSections, prefix
-    script_name = os.path.basename(sys.argv[0])
-
+    global keepLinks, keepSections
+    
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__)
+    parser.add_argument("wikidump", help="XML wiki dump file")
+    parser.add_argument("outputdir", help="output directory")
+    parser.add_argument("-b", "--bytes", default="25M", help="put specified bytes per output file (default is %(default)s)", metavar="n[KM]")
+    parser.add_argument("-c", "--compress", default=False, action="store_const", const=True, help="compress output files using bzip")
+    parser.add_argument("-l", "--links", default=False, action="store_const", const=True, help="preserve links")
+    parser.add_argument("-s", "--sections", default=False, action="store_const", const=True, help="preserve sections")
+     
+    args = parser.parse_args()
+    
+    keepLinks = args.links
+    keepSections = args.sections
+    
+   # Minimum size of output files
+    min_file_size = 200 * 1024
     try:
-        long_opts = ['help', 'compress', 'bytes=', 'basename=','links', 'sections', 'output=', 'version']
-        opts, args = getopt.gnu_getopt(sys.argv[1:], 'cb:lo:B:sv', long_opts)
-    except getopt.GetoptError:
-        show_usage(script_name)
-        sys.exit(1)
-
-    compress = False
-    file_size = 500 * 1024
-    output_dir = '.'
-
-    for opt, arg in opts:
-        if opt == '--help':
-            show_help()
-            sys.exit()
-        elif opt in ('-c', '--compress'):
-            compress = True
-        elif opt in ('-l', '--links'):
-            keepLinks = True
-        elif opt in ('-s', '--sections'):
-            keepSections = True
-        elif opt in ('-B', '--base'):
-            prefix = arg
-        elif opt in ('-b', '--bytes'):
-            try:
-                if arg[-1] in 'kK':
-                    file_size = int(arg[:-1]) * 1024
-                elif arg[-1] in 'mM':
-                    file_size = int(arg[:-1]) * 1024 * 1024
-                else:
-                    file_size = int(arg)
-                if file_size < minFileSize: raise ValueError()
-            except ValueError:
-                print >> sys.stderr, \
-                '%s: %s: Insufficient or invalid size' % (script_name, arg)
-                sys.exit(2)
-        elif opt in ('-o', '--output'):
-                output_dir = arg
-        elif opt in ('-v', '--version'):
-                print 'WikiExtractor.py version:', version
-                sys.exit(0)
-
-    if len(args) > 0:
-        show_usage(script_name)
-        sys.exit(4)
-
-    if not os.path.isdir(arg):
+        if args.bytes[-1] in 'kK':
+            file_size = int(args.bytes[:-1]) * 1024
+        elif args.bytes[-1] in 'mM':
+            file_size = int(args.bytes[:-1]) * 1024 * 1024
+        else:
+            file_size = int(args.bytes)
+        if file_size < min_file_size: raise ValueError()
+    except ValueError:
+        print >> sys.stderr, \
+        'Insufficient or invalid bytes size (minimum per output is %d bytes)' \
+        % min_file_size
+        return
+        
+    if not os.path.isdir(args.outputdir):
         try:
-            os.makedirs(output_dir)
+            os.makedirs(args.outputdir)
         except:
-            print >> sys.stderr, 'Could not create: ', output_dir
+            print >> sys.stderr, 'Could not create: ', args.outputdir
             return
     
-    process_data(sys.stdin, output_dir)
+    with open(args.wikidump) as inputdump:
+        process_data(inputdump, args.outputdir, file_size)
+
     
 if __name__ == '__main__':
     main()
