@@ -52,7 +52,7 @@ from htmlentitydefs import name2codepoint
 from lxml import etree
 
 # Program version
-version = '1.0'
+version = '1.0.0'
 
 class WikiCleanerThread(threading.Thread):
     
