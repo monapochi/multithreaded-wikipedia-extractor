@@ -45,23 +45,30 @@ Each file contains several documents in the format:
         </doc>
 """
 
-import Queue, threading, argparse, shutil
-import sys, urllib, re, bz2, multiprocessing
+import Queue, threading, argparse, shutil, json
+import sys, re, bz2, multiprocessing
 import os.path, os, string, random, traceback
 from htmlentitydefs import name2codepoint
 from lxml import etree
+
+# compatible with the original work from the TANL project
+# see http://medialab.di.unipi.it/wiki/Tanl for more info
+TANL = "tanl"
+# outputs json objects
+JSON = "json"
 
 class WikiCleanerThread(threading.Thread):
     
     _filename_lock = threading.RLock()    
     
-    def __init__(self, queue, outputdir, maxfilesize, prefix, compress):
+    def __init__(self, queue, outputdir, maxfilesize, prefix, compress, output_format):
         threading.Thread.__init__(self)
         self._queue = queue
         self._maxfilesize = maxfilesize
         self._prefix = prefix
         self._compress = compress
         self._outputdir = outputdir
+        self._output_format = output_format
         if not os.path.exists(outputdir):
             os.mkdir(outputdir)
         self._outfile = None
@@ -79,24 +86,34 @@ class WikiCleanerThread(threading.Thread):
                 return bz2.BZ2File(fpath, 'w')
                 
             return open(fpath, 'w')
+            
+    def _geturl(self, wiki_id):
+        return "%s?curid=%s" % (self._prefix, wiki_id)        
     
-    def _write(self, header, body, footer):
+    def _write(self, wiki_id, wiki_title, wiki_text):
         if not self._outfile:
             self._outfile = self._get_file(self._outputdir, self._compress)
         
-        self._outfile.write(header.encode("utf-8")) 
-        self._outfile.write(body.encode("utf-8"))
-        self._outfile.write(footer.encode("utf-8"))        
+        print "[%s] [%s]" % (wiki_id.encode('utf-8'), wiki_title.encode('utf-8'))        
+        
+        url = self._geturl(wiki_id)    
+        
+        if self._output_format == TANL:
+            header = '<doc id="%s" url="%s" title="%s">%s\n' % (wiki_id, url, wiki_title, wiki_title)
+            body = ' '.join(compact(clean(wiki_text))).strip()
+            footer = "\n</doc>"
+            self._outfile.write(header.encode("utf-8")) 
+            self._outfile.write(body.encode("utf-8"))
+            self._outfile.write(footer.encode("utf-8"))        
+            
+        elif self._output_format == JSON:
+            article = dict(id=wiki_id, url=url, title=wiki_title, text=wiki_text)
+            self._outfile.write(json.dumps(article, encoding='utf-8') + '\n')
         
         if self._outfile.tell() > self._maxfilesize:
             self._outfile.close()
             self._outfile = None
     
-    def _guess_url(self, title):
-        title = urllib.quote(title.replace(' ', '_').encode('utf-8'))
-        title = title.replace('%28', '(').replace('%29', ')')
-        return self._prefix + title.capitalize()
-            
     def _clean(self, page_elem):
         # wiki xml dumps has namespace
         # use xmlns from the page element
@@ -110,12 +127,7 @@ class WikiCleanerThread(threading.Thread):
             text_elem = revision_elem.find(TAG("text"))
             if text_elem is not None:
                 wiki_text = text_elem.text.strip()
-                print "[%s] [%s]" % (wiki_id.encode('utf-8'), wiki_title.encode('utf-8'))
-                url = self._guess_url(wiki_title)
-                header = '<doc id="%s" url="%s" title="%s">%s\n' % (wiki_id, url, wiki_title, wiki_title)
-                body = ' '.join(compact(clean(wiki_text))).strip()
-                footer = "\n</doc>"
-                self._write(header, body, footer)
+                self._write(wiki_id, wiki_title, wiki_text)
                 
     def run(self):
         while True:
@@ -540,7 +552,7 @@ def handle_unicode(entity):
     if numeric_code >= 0x10000: return ''
     return unichr(numeric_code)
 
-def process_data(inputdump, outputdir, maxfilesize, compress):
+def process_data(inputdump, outputdir, maxfilesize, compress, outformat):
     
     # we expects large dumps so we are using iterparse method
     context = etree.iterparse(inputdump)
@@ -561,7 +573,7 @@ def process_data(inputdump, outputdir, maxfilesize, compress):
     # start worker threads    
     workers = []
     for _ in range(multiprocessing.cpu_count()):
-        cleaner = WikiCleanerThread(queue, outputdir, maxfilesize, prefix, compress)
+        cleaner = WikiCleanerThread(queue, outputdir, maxfilesize, prefix, compress, outformat)
         cleaner.setDaemon(True)
         cleaner.start()
         workers.append(cleaner)
@@ -590,6 +602,7 @@ def main():
     parser.add_argument("-c", "--compress", default=False, action="store_const", const=True, help="compress output files using bzip")
     parser.add_argument("-l", "--links", default=False, action="store_const", const=True, help="preserve links")
     parser.add_argument("-s", "--sections", default=False, action="store_const", const=True, help="preserve sections")
+    parser.add_argument("-f", "--format", choices=(TANL, JSON), default=JSON, help="choose output format default is %(default)s")
      
     args = parser.parse_args()
     
@@ -623,10 +636,10 @@ def main():
     
     if args.wikidump.lower().endswith("bz2"):
         with bz2.BZ2File(args.wikidump, 'r') as inputdump:
-            process_data(inputdump, args.outputdir, file_size, args.compress)
+            process_data(inputdump, args.outputdir, file_size, args.compress, args.format.lower())
     else:
         with open(args.wikidump, 'r') as inputdump:
-            process_data(inputdump, args.outputdir, file_size, args.compress)
+            process_data(inputdump, args.outputdir, file_size, args.compress, args.format.lower())
 
     
 if __name__ == '__main__':
