@@ -8,7 +8,12 @@
 # =============================================================================
 #  Copyright (c) 2012. Leonardo Souza (leonardossz@gmail.com).
 # =============================================================================
-
+#
+#  Contributors:
+#	Juan Manuel Caicedo (juan@cavorite.com)
+#	Humberto Pereira (begini@gmail.com)
+#	Siegfried-A. Gevatter (siegfried@gevatter.com), 2013
+#
 # =============================================================================
 #  This a modified version of the orginal Wikipedia Extractor by
 #  Giuseppe Attardi (attardi@di.unipi.it), University of Pisa and
@@ -158,10 +163,10 @@ keepLinks = False
 keepSections = False
 
 ##
-# Recognize onlyy these namespaces
+# Recognize only these namespaces
+# w: Internal links to the Wikipedia
 #
-acceptedNamespaces = set([
-])
+acceptedNamespaces = set([])
 
 ##
 # Drop these elements from article text
@@ -187,7 +192,6 @@ discardElements = set([
 # ParameterName = ? uppercase, lowercase, numbers, no spaces, some special chars ? ;
 #
 #=========================================================================== 
-        
 
 selfClosingTags = set([ 'br', 'hr', 'nobr', 'ref', 'references' ])
 
@@ -267,26 +271,26 @@ comment = re.compile(r'<!--.*?-->', re.DOTALL)
 # Match elements to ignore
 discard_element_patterns = []
 for tag in discardElements:
-    pattern = re.compile(r'<%s[^>]*>.*?</%s>' % (tag, tag), re.DOTALL | re.IGNORECASE)
+    pattern = re.compile(r'<\s*%s\b[^>]*>.*?<\s*/\s*%s>' % (tag, tag), re.DOTALL | re.IGNORECASE)
     discard_element_patterns.append(pattern)
 
 # Match ignored tags
 ignored_tag_patterns = []
 for tag in ignoredTags:
-    left = re.compile(r'<%s[^/]*>' % tag, re.IGNORECASE)
-    right = re.compile(r'</%s>' % tag, re.IGNORECASE)
+    left = re.compile(r'<\s*%s\b[^>]*>' % tag, re.IGNORECASE)
+    right = re.compile(r'<\s*/\s*%s>' % tag, re.IGNORECASE)
     ignored_tag_patterns.append((left, right))
 
 # Match selfClosing HTML tags
 selfClosing_tag_patterns = []
 for tag in selfClosingTags:
-    pattern = re.compile(r'<%s[^/]*/\s*>' % tag, re.DOTALL | re.IGNORECASE)
+    pattern = re.compile(r'<\s*%s\b[^/]*/\s*>' % tag, re.DOTALL | re.IGNORECASE)
     selfClosing_tag_patterns.append(pattern)
 
 # Match HTML placeholder tags
 placeholder_tag_patterns = []
 for tag, repl in placeholder_tags.items():
-    pattern = re.compile(r'<\s*%s(\s*| [^/]+?)>.*?<\s*/\s*%s\s*>' % (tag, tag), re.DOTALL | re.IGNORECASE)
+    pattern = re.compile(r'<\s*%s(\s*| [^>]+?)>.*?<\s*/\s*%s\s*>' % (tag, tag), re.DOTALL | re.IGNORECASE)
     placeholder_tag_patterns.append((pattern, repl))
 
 # Match preformatted lines
@@ -414,9 +418,6 @@ def clean(text):
     # Drop tables
     text = dropNested(text, r'{\|', r'\|}')
 
-    # Drop preformatted
-    text = preformatted.sub('', text)
-
     # Expand links
     text = wikiLink.sub(make_anchor_tag, text)
     # Drop all remaining ones
@@ -477,6 +478,12 @@ def clean(text):
 
     text = text.replace('<<', u'«').replace('>>', u'»')
 
+    #############################################
+
+    # Drop preformatted
+    # This can't be done before since it may remove tags
+    text = preformatted.sub('', text)
+
     # Cleanup text
     text = text.replace('\t', ' ')
     text = spaces.sub(' ', text)
@@ -494,6 +501,7 @@ def compact(text):
     page = []                   # list of paragraph
     headers = {}                # Headers for unfilled sections
     emptySection = False        # empty sections are discarded
+    inList = False              # whether opened <UL>
 
     for line in text.split('\n'):
 
