@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2
 # -*- coding: utf-8 -*-
 
 # =============================================================================
@@ -133,7 +133,9 @@ class WikiCleanerThread(threading.Thread):
         if revision_elem is not None:
             text_elem = revision_elem.find(TAG("text"))
             if text_elem is not None:
-                wiki_text = text_elem.text.strip()
+                wiki_text = ""
+                if text_elem.text is not None:
+                    wiki_text = text_elem.text.strip()
                 self._write(wiki_id, wiki_title, wiki_text)
                 
     def run(self):
