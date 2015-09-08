@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 # =============================================================================
@@ -61,6 +61,8 @@ from lxml import etree
 TANL = "tanl"
 # outputs json objects
 JSON = "json"
+# stores data to leveldb
+LEVELDB = "leveldb"
 
 class WikiCleanerThread(threading.Thread):
     
@@ -96,12 +98,20 @@ class WikiCleanerThread(threading.Thread):
         return "%s?curid=%s" % (self._prefix, wiki_id)        
     
     def _write(self, wiki_id, wiki_title, wiki_text):
-        if not self._outfile:
+        
+
+        if not self._outfile and self._output_format != LEVELDB :
             self._outfile = self._get_file(self._outputdir, self._compress)
         
         colon = wiki_title.find(':')
         if colon < 0 or wiki_title[:colon] in acceptedNamespaces:
             print "[%s] [%s]" % (wiki_id.encode('utf-8'), wiki_title.encode('utf-8'))        
+        
+            #store to leveldb
+            if self._output_format == LEVELDB:
+                text = ' '.join(compact(clean(wiki_text))).strip()
+                WB.Put(wiki_title.encode("utf-8"), text.encode("utf-8"))
+                return
         
             url = self._geturl(wiki_id)    
         
@@ -116,10 +126,12 @@ class WikiCleanerThread(threading.Thread):
             elif self._output_format == JSON:
                 article = dict(id=wiki_id, url=url, title=wiki_title, text=wiki_text)
                 self._outfile.write(json.dumps(article, encoding='utf-8') + '\n')
-        
-        if self._outfile.tell() > self._maxfilesize:
-            self._outfile.close()
-            self._outfile = None
+
+
+        if self._output_format != LEVELDB:
+            if self._outfile.tell() > self._maxfilesize:
+                self._outfile.close()
+                self._outfile = None
     
     def _clean(self, page_elem):
         # wiki xml dumps has namespace
@@ -139,12 +151,22 @@ class WikiCleanerThread(threading.Thread):
                 self._write(wiki_id, wiki_title, wiki_text)
                 
     def run(self):
+        if self._output_format == LEVELDB:
+            wbCount = 0
+
         while True:
             page_elem = None
             try:
                 page_elem = self._queue.get(timeout=1)
                 if page_elem is not None:
                     self._clean(page_elem)
+                    if self._output_format == LEVELDB:
+                        if wbCount > DB_MAX_BUFFER:
+                            DB.Write(WB, sync = False)
+                            wbCount = 0
+                        else:
+                            wbCount += 1
+
             except Queue.Empty:
                 break
             except:
@@ -597,7 +619,7 @@ def process_data(inputdump, outputdir, maxfilesize, compress, outformat):
     
     # wait an empty queue
     queue.join()        
-    
+
     for w in workers:
         w.join()
     
@@ -614,7 +636,7 @@ def main():
     parser.add_argument("-c", "--compress", default=False, action="store_const", const=True, help="compress output files using bzip")
     parser.add_argument("-l", "--links", default=False, action="store_const", const=True, help="preserve links")
     parser.add_argument("-s", "--sections", default=False, action="store_const", const=True, help="preserve sections")
-    parser.add_argument("-f", "--format", choices=(TANL, JSON), default=JSON, help="choose output format default is %(default)s")
+    parser.add_argument("-f", "--format", choices=(TANL, JSON, LEVELDB), default=LEVELDB, help="choose output format default is %(default)s")
      
     args = parser.parse_args()
     
@@ -637,14 +659,22 @@ def main():
         % min_file_size
         return
         
-    if not os.path.exists(args.outputdir):
-        os.makedirs(args.outputdir)
+    if args.format.lower() == LEVELDB:
+        import leveldb
+        global DB, WB, DB_MAX_BUFFER
+        DB = leveldb.LevelDB(args.outputdir)
+        WB = leveldb.WriteBatch()
+        DB_MAX_BUFFER = 2048 # The max value of waiting flushing
+
     else:
-        if args.overwrite:
-            shutil.rmtree(args.outputdir)
+        if not os.path.exists(args.outputdir):
             os.makedirs(args.outputdir)
         else:
-            raise ValueError("%s already exists, use --overwrite to recreate" % args.outputdir)
+            if args.overwrite:
+                shutil.rmtree(args.outputdir)
+                os.makedirs(args.outputdir)
+            else:
+                raise ValueError("%s already exists, use --overwrite to recreate" % args.outputdir)
     
     if args.wikidump.lower().endswith("bz2"):
         with bz2.BZ2File(args.wikidump, 'r') as inputdump:
