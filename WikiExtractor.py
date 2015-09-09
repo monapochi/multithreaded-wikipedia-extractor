@@ -608,23 +608,18 @@ def process_data(inputdump, outputdir, maxfilesize, compress, outformat):
     print "base url: %s" % prefix
     
     # initialize wiki page queue
-    queue = Queue.Queue(maxsize=100)
+    queue = Queue.Queue(maxsize=1024)
 
     # start worker threads    
-    workers = []
     for _ in range(multiprocessing.cpu_count()):
         cleaner = WikiCleanerThread(queue, outputdir, maxfilesize, prefix, compress, outformat)
-        cleaner.setDaemon(True)
+        cleaner.setDaemon(False)
         cleaner.start()
-        workers.append(cleaner)
     
     # put element pages in the queue to be processed by the cleaner threads
     for event, elem in context:
         if event == "end" and elem.tag.endswith("page"):
             queue.put(elem)
-    
-    for w in workers:
-        w.join()
     
     print "finished"
 
