@@ -111,10 +111,6 @@ class WikiCleanerThread(threading.Thread):
             if self._output_format == LEVELDB:
                 text = ' '.join(compact(clean(wiki_text))).strip()
                 DB.put(wiki_title.encode("utf-8"), text.encode("utf-8"))
-                del text
-                del wiki_text
-                del wiki_title
-                del wiki_id
                 return
         
             url = self._geturl(wiki_id)    
@@ -137,11 +133,6 @@ class WikiCleanerThread(threading.Thread):
                 self._outfile.close()
                 self._outfile = None
    
-        del wiki_id
-        del wiki_title
-        del wiki_text
-
-
     def _clean(self, page_elem):
         # wiki xml dumps has namespace
         # use xmlns from the page element
@@ -158,11 +149,6 @@ class WikiCleanerThread(threading.Thread):
                 if text_elem.text is not None:
                     wiki_text = text_elem.text.strip()
                 self._write(wiki_id, wiki_title, wiki_text)
-                del wiki_text
-	        del text_elem
-        del revision_elem
-        del wiki_id
-        del wiki_title
             
     def run(self):
 
@@ -621,7 +607,7 @@ def process_data(inputdump, outputdir, maxfilesize, compress, outformat):
         if event == "end" and elem.tag.endswith("page"):
             queue.put(elem)
     
-    print "finished"
+    print "finishing..."
 
 def main():
     global keepLinks, keepSections
