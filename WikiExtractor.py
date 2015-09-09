@@ -110,7 +110,7 @@ class WikiCleanerThread(threading.Thread):
             #store to leveldb
             if self._output_format == LEVELDB:
                 text = ' '.join(compact(clean(wiki_text))).strip()
-                WB.Put(wiki_title.encode("utf-8"), text.encode("utf-8"))
+                DB.put(wiki_title.encode("utf-8"), text.encode("utf-8"))
                 del text
                 del wiki_text
                 del wiki_title
@@ -165,8 +165,6 @@ class WikiCleanerThread(threading.Thread):
         del wiki_title
             
     def run(self):
-        if self._output_format == LEVELDB:
-            wbCount = 0
 
         while True:
             page_elem = None
@@ -174,12 +172,6 @@ class WikiCleanerThread(threading.Thread):
                 page_elem = self._queue.get(timeout=1)
                 if page_elem is not None:
                     self._clean(page_elem)
-                    if self._output_format == LEVELDB:
-                        if wbCount > DB_MAX_BUFFER:
-                            DB.Write(WB, sync = False)
-                            wbCount = 0
-                        else:
-                            wbCount += 1
 
             except Queue.Empty:
                 break
@@ -631,9 +623,6 @@ def process_data(inputdump, outputdir, maxfilesize, compress, outformat):
         if event == "end" and elem.tag.endswith("page"):
             queue.put(elem)
     
-    # wait an empty queue
-    queue.join()        
-
     for w in workers:
         w.join()
     
@@ -675,9 +664,8 @@ def main():
         
     if args.format.lower() == LEVELDB:
         import leveldb
-        global DB, WB, DB_MAX_BUFFER
-        DB = leveldb.LevelDB(args.outputdir)
-        WB = leveldb.WriteBatch()
+        global DB, DB_MAX_BUFFER
+        DB = leveldb.DB(args.outputdir)
         DB_MAX_BUFFER = 2048 # The max value of waiting flushing
 
     else:
