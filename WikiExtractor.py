@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+#
+# This modification for leveldb 
+# September 9th, 2015
+# Shinichiro Naoi (https://github.com/monapochi)
 # =============================================================================
 #  Multithread-Wikipedia-Extractor
 #  For SMP based architectures
